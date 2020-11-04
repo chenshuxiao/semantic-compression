@@ -20,5 +20,5 @@ We would like to, firstly, **find a way of compressing the *h*-by-*w*-by-*n* int
 2. [Superpixel](https://medium.com/@darshita1405/superpixels-and-slic-6b2d8a6e4f08) to combine multiple pixels of similar distribution vectors to reduce the mount of pixels.
 3. Compress across a series of probability distribution matrices. Similar to video compression. See [H.264](https://en.wikipedia.org/wiki/Advanced_Video_Coding) and [compression picture types](https://en.wikipedia.org/wiki/Video_compression_picture_types#Bi-directional_predicted_frames/slices_(B-frames/slices)).
 4. Extent our reach back to the pixel-wise semantic segmentation neural network itself. Anything inside the neural network is valuable to the compression? In this way, we no longer treat the network as a black box. 
-4.5. Keep the FCN layers the same, but change the last upscale layer to decrease dimensionality and have specific properties, such as cluster distance consistency and simple distance measures(eudclidean) approximating similarity between object classes.
+5. Keep the FCN layers the same, but change the last upscale layer to decrease dimensionality and have specific properties, such as cluster distance consistency and simple distance measures(eudclidean) approximating similarity between object classes.
 
