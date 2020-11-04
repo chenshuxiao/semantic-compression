@@ -1,6 +1,6 @@
 # semantic compression (devel)
 
-This is our course project repo for the CS285 class at Berkeley.
+This is our course project repo for the CS290 class at Berkeley.
 
 ## Motivation
 
