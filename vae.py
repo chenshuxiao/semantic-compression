@@ -145,7 +145,7 @@ class VanillaVAE(nn.Module):
 
         recons_loss = F.mse_loss(recons, input)
 
-        kld_loss = -0.5 * torch.mean(torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim = 1), dim = 0)
+        kld_loss = -0.5 * torch.mean(torch.mean(1 + logvar - mu ** 2 - logvar.exp(), dim = 1), dim = 0)
 
         return {'reconstruction_loss': recons_loss, 'KLD':kld_weight * kld_loss}
 
