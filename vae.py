@@ -1,29 +1,31 @@
 import torch
 from torch import nn
+from torch import Tensor
 from torch.nn import functional as F
-from .types_ import *
+from typing import *
 
 """ contains vae classes.
 VanillaVae adapted from https://github.com/AntixK/PyTorch-VAE/ and https://github.com/podgorskiy/VAE
 
 """
 
-class VanillaVAE(nn.module):
+class VanillaVAE(nn.Module):
 
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
-                 hidden_dims: List = None,
-                 **kwargs) -> None:
+                 res: int,
+                 layer_count: int) -> None:
         super(VanillaVAE, self).__init__()
 
         self.latent_dim = latent_dim
 
         modules = []
-        if hidden_dims is None:
-            hidden_dims = [32, 64, 128, 256, 512]
+        hidden_dims = [res*(2**i) for i in range(layer_count)]
+        # print (hidden_dims)
         self.last_hdim = hidden_dims[-1]
+        image_channels = in_channels
 
         # Build Encoder
         for h_dim in hidden_dims:
@@ -37,14 +39,14 @@ class VanillaVAE(nn.module):
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
-        self.fc_mu = nn.Linear(hidden_dims[-1]*4, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1]*4, latent_dim)
-
+        self.code_len = res//(2**layer_count)
+        self.fc_mu = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
+        self.fc_var = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
 
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * self.code_len * self.code_len)
 
         hidden_dims.reverse()
 
@@ -72,7 +74,7 @@ class VanillaVAE(nn.module):
                                                output_padding=1),
                             nn.BatchNorm2d(hidden_dims[-1]),
                             nn.LeakyReLU(),
-                            nn.Conv2d(hidden_dims[-1], out_channels= 3,
+                            nn.Conv2d(hidden_dims[-1], out_channels=image_channels,
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
 
@@ -101,7 +103,8 @@ class VanillaVAE(nn.module):
         :return: (Tensor) [N x C x H x W]
         """
         result = self.decoder_input(z)
-        result = result.view(-1, self.last_hdim, 2, 2)
+        # print (result.shape)
+        result = result.view(z.shape[0], self.last_hdim, self.code_len, self.code_len)
         result = self.decoder(result)
         result = self.final_layer(result)
         return result
@@ -114,14 +117,17 @@ class VanillaVAE(nn.module):
         :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
         :return: (Tensor) [B x D]
         """
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return eps * std + mu
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            return eps * std + mu
+        else:
+            return mu
 
     def forward(self, input: Tensor) -> List[Tensor]:
         mu, log_var = self.encode(input)
         z = self.reparameterize(mu, log_var)
-        return  [self.decode(z), input, mu, log_var]
+        return  [self.decode(z), mu, log_var]
 
     def loss_function(self,
                       recons: Tensor,
