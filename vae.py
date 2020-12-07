@@ -1,28 +1,30 @@
 import torch
 from torch import nn
 from torch import Tensor
+from blocks import *
 from typing import *
 
 """ contains vae classes.
 """
-# TODO: make blocks of regular, resnet, iso, R-iso
-# TODO: we will make regular and resnet first, then iso and R-iso as flags?
 
 # NOTE: Interestingly, it may be the case that relu for encoding and leaky relu for decoding may provide
 #       better results, https://arxiv.org/pdf/1511.06434.pdf
 
 class VanillaVAE(nn.Module):
     """ 
-    adapted from https://github.com/AntixK/PyTorch-VAE/ and https://github.com/podgorskiy/VAE
+    inspired by: https://github.com/AntixK/PyTorch-VAE/ and https://github.com/podgorskiy/VAE
     """
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
                  res: int,
-                 block_count: int,
-                 layer_mult: int = 64) -> None:
-        """inits a vanilla VAE
+                 stage_count: int = 4,
+                 layer_mult: int = 64,
+                 d: = 1,
+                 resnet: bool = False,
+                 **kwargs) -> None:
+        """inits a VAE
 
         Parameters
         ----------
@@ -33,37 +35,40 @@ class VanillaVAE(nn.Module):
         res : int
             length of resolution of (square)image data
             for now only deals with powers of two...
-        layer_count : int
-            number of hidden layers of half of the network
+        stage_count : int
+            number of hidden stage layers of half of the network, by default 4
         layer_mult : int
-            first hidden layer dimension
+            first hidden layer dimension, by default 64
+        d : int or array
+            # of transforms per block, by default 1
+        resnet : bool
+            flag to add batch_normalization and skip connections, by default False
         """
+
         super(VanillaVAE, self).__init__()
 
         self.latent_dim = latent_dim
 
-        modules = []
-        hidden_dims = [layer_mult*(2**i) for i in range(layer_count)]
+        hidden_dims = [layer_mult*(2**i) for i in range(stage_count-1)]
         # print (hidden_dims)
         self.last_hdim = hidden_dims[-1]
         image_channels = in_channels
 
-        # TODO: add resnet likeness 
-        # https://github.com/julianstastny/VAE-ResNet18-PyTorch/blob/master/model.py
+        if type(d) == int:
+            d = [d]*stage_count
+        # TODO: integrate blocks
 
         # Build Encoder
         for h_dim in hidden_dims:
-            modules.append(
-                nn.Sequential(
-                    nn.Conv2d(in_channels, out_channels=h_dim,
-                              kernel_size= 3, stride= 2, padding  = 1),
-                    nn.BatchNorm2d(h_dim),
-                    nn.ReLU())
-            )
+            stride = 2
+            if in_channels == h_dim:
+                stride = 1
             in_channels = h_dim
 
-        self.encoder = nn.Sequential(*modules)
-        self.code_len = res//(2**layer_count)
+        self._construct_encoder(in_channels, hidden_dims, d, **kwargs)
+
+        self.code_len = res//(2**stage_count)
+        # TODO: add reshead into blocks and change these fc layers to heads
         self.fc_mu = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
         self.fc_var = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
 
@@ -81,7 +86,7 @@ class VanillaVAE(nn.Module):
                     nn.ConvTranspose2d(hidden_dims[i],
                                        hidden_dims[i + 1],
                                        kernel_size=3,
-                                       stride = 2,
+                                       stride=2,
                                        padding=1,
                                        output_padding=1),
                     nn.BatchNorm2d(hidden_dims[i + 1]),
@@ -102,6 +107,25 @@ class VanillaVAE(nn.Module):
                             nn.Conv2d(hidden_dims[-1], out_channels=image_channels,
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
+
+    def _construct_encoder(in_channels, hidden_dims, d, **kwargs):
+        modules = []
+        # stem
+        modules.append(ResStem(w_in= in_channels, w_out= hidden_dims[0], **kwargs)
+        # stages
+        w_in = hidden_dims[0]
+        for i, w_out in enumerate(hidden_dims):
+            stride = 2
+            if in_channels == h_dim:
+                stride = 1
+            modules.append(ResStage(w_in=w_in, w_out=w_out, stride=stride, d=d[i], **kwargs))
+            w_in = w_out
+        self.encoder = nn.Sequential(*modules)
+        # head is fc_mu fc_var
+
+    # TODO: finish this, see _network_init
+    def _init_encoder(**kwargs):
+        return None
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
@@ -183,7 +207,7 @@ class VanillaVAE(nn.Module):
         return self.forward(x)[0]
    
 
-   
+
 class IsoVAE(VanillaVAE):
     def __init__(self,
                  in_channels: int,

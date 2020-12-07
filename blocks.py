@@ -4,81 +4,200 @@ from torch import Tensor
 from torch.nn import functional as F
 from typing import *
 
-class VanillaBlockEnc(nn.Module):
-    """ Resnet Block without skip connections and batch normalization
-    inspired by: https://github.com/julianstastny/VAE-ResNet18-PyTorch
+# TODO: make blocks of regular, resnet, iso, R-iso
+# TODO: we will make regular and resnet first, then iso and R-iso as flags?
 
-    Parameters
-    ----------
-    nn : [type]
-        [description]
-    """
-    def __init__(self, in_planes: int, stride: int=1):
+def get_regular(in_channels, h_dim, stride):
+    return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels=h_dim,
+                    kernel_size= 3, stride= stride, padding= 1),
+            nn.BatchNorm2d(h_dim),
+            nn.ReLU()
+        )
+
+class SReLU(nn.Module):
+    """Shifted ReLU"""
+
+    def __init__(self, nc):
         super().__init__()
+        self.srelu_bias = nn.Parameter(torch.Tensor(1, nc, 1, 1))
+        self.srelu_relu = nn.ReLU(inplace=True)
+        nn.init.constant_(self.srelu_bias, -1.0)
 
-        self.planes = in_planes*stride
+    def forward(self, x):
+        return self.srelu_relu(x - self.srelu_bias) + self.srelu_bias
 
-        self.conv1 = nn.Conv2d(in_planes, self.planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.conv2 = nn.Conv2d(self.planes, self.planes, kernel_size=3, stride=1, padding=1, bias=False)
-    
-    def forward(self, x: Tensor):
-        out = nn.ReLU(self.conv1(x))
-        out = nn.ReLU(self.conv2(out))
-        return out
+class BasicTransform(nn.Module):
+    """Basic transformation: 3x3, 3x3"""
 
-class ResBlockEnc(nn.Module):
-
-    def __init__(self, in_planes: int, stride: int=1):
+    def __init__(self, w_in, w_out, stride, w_b=None, num_gs=1, **kwargs):
+        assert w_b is None and num_gs == 1, \
+            'Basic transform does not support w_b and num_gs options'
         super().__init__()
+        self._construct(w_in, w_out, stride, **kwargs)
 
-        planes = in_planes*stride
+    def _construct(self, w_in, w_out, stride, **kwargs):
+        # 3x3, BN, ReLU
+        self.a = nn.Conv2d(
+            w_in, w_out, kernel_size=3,
+            stride=stride, padding=1, bias=not kwargs['HAS_BN'] and not kwargs['SReLU']
+        )
+        if kwargs['HAS_BN']:
+            self.a_bn = nn.BatchNorm2d(w_out)
+        self.a_relu = nn.ReLU(inplace=True) if not kwargs['SReLU'] else SReLU(w_out)
+        # 3x3, BN
+        self.b = nn.Conv2d(
+            w_out, w_out, kernel_size=3,
+            stride=1, padding=1, bias=not kwargs['HAS_BN'] and not kwargs['SReLU']
+        )
+        if kwargs['HAS_BN']:
+            self.b_bn = nn.BatchNorm2d(w_out)
+            self.b_bn.final_bn = True
 
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        # if C.ISON.HAS_RES_MULTIPLIER:
+        #     self.shared_scalar = SharedScale()
 
-        if stride == 1:
-            self.shortcut = nn.Sequential()
+    def forward(self, x):
+        for layer in self.children():
+            x = layer(x)
+        return x
+
+class ResBlock(nn.Module):
+    """Residual block: x + F(x)"""
+
+    def __init__(
+        self, w_in, w_out, stride, trans_fun, w_b=None, num_gs=1, **kwargs
+    ):
+        super(ResBlock, self).__init__()
+        self.kwargs = kwargs
+        self._construct(w_in, w_out, stride, trans_fun, w_b, num_gs, **kwargs)
+
+    def _add_skip_proj(self, w_in, w_out, stride, **kwargs):
+        self.proj = nn.Conv2d(
+            w_in, w_out, kernel_size=1,
+            stride=stride, padding=0, bias=not kwargs['HAS_BN'] and not kwargs['SReLU']
+        )
+        if kwargs['HAS_BN']:
+            self.bn = nn.BatchNorm2d(w_out)
+
+    def _construct(self, w_in, w_out, stride, trans_fun, w_b, num_gs, **kwargs):
+        # Use skip connection with projection if shape changes
+        self.proj_block = (w_in != w_out) or (stride != 1)
+        if self.proj_block and kwargs['HAS_ST']:
+            self._add_skip_proj(w_in, w_out, stride, **kwargs)
+        self.f = trans_fun(w_in, w_out, stride, w_b, num_gs, **kwargs)
+        self.relu = nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out)
+
+    def forward(self, x):
+        if self.proj_block:
+            if self.kwargs['HAS_BN'] and self.kwargs['HAS_ST']:
+                x = self.bn(self.proj(x)) + self.f(x)
+            elif not self.kwargs['HAS_BN'] and self.kwargs['HAS_ST']:
+                x = self.proj(x) + self.f(x)
+            else:
+                x = self.f(x)
         else:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes)
+            if self.kwargs['HAS_ST']:
+                x = x + self.f(x)
+            else:
+                x = self.f(x)
+        x = self.relu(x)
+        return x
+
+class ResStem(nn.Module):
+    """Stem of resnet (start of resnet)."""
+    def __init__(self, w_in: int, w_out: int, stride: int=1, cifar: bool=True, **kwargs):
+        """[summary]
+
+        Parameters
+        ----------
+        w_in : int
+            numbers of dim in
+        w_out : int
+            numbers of dim out
+        stride : int, optional, by default 1
+        cifar : bool, optional
+            cifar images are 32x32, if working with larger images, set to False, by default True
+            if True: kernel_size=7, padding=3; else k=3, padding=1
+        """
+        super().__init__()
+        if cifar:
+            self._construct_cifar(w_in, w_out, **kwargs)
+        else:
+            self._construct_imagenet(w_in, w_out, **kwargs)
+
+    # Biases are in the BN layers that follow.
+    def _construct_cifar(self, w_in, w_out, **kwargs):
+        # 3x3, BN, ReLU
+        self.conv = nn.Conv2d(
+            w_in, w_out, kernel_size=3,
+            stride=1, padding=1, bias=not kwargs['HAS_BN'] and not kwargs['SReLU']
+        )
+        self.relu = nn.ReLU(True)
+        if kwargs['HAS_BN']:
+            self.bn = nn.BatchNorm2d(w_out)
+        self.relu = nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out)
+
+    def _construct_imagenet(self, w_in, w_out, **kwargs):
+        # 7x7, BN, ReLU, maxpool
+        self.conv = nn.Conv2d(
+            w_in, w_out, kernel_size=7,
+            stride=2, padding=3, bias=not kwargs['HAS_BN'] and not kwargs['SReLU']
+        )
+        if kwargs['HAS_BN']:
+            self.bn = nn.BatchNorm2d(w_out)
+        self.relu = nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out)
+        self.pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+    def forward(self, x):
+        for layer in self.children():
+            x = layer(x)
+        return x
+
+class ResStage(nn.Module):
+    """Stage of ResNet."""
+
+    def __init__(self, w_in, w_out, stride, d, w_b=None, num_gs=1, **kwargs):
+        super().__init__()
+        self._construct(w_in, w_out, stride, d, w_b, num_gs, **kwargs)
+
+    def _construct(self, w_in, w_out, stride, d, w_b, num_gs, **kwargs):
+        # Construct the blocks
+        for i in range(d):
+            # Stride and w_in apply to the first block of the stage
+            b_stride = stride if i == 0 else 1
+            b_w_in = w_in if i == 0 else w_out
+            # Retrieve the transformation function
+            trans_fun = BasicTransform
+            # Construct the block
+            res_block = ResBlock(
+                b_w_in, w_out, b_stride, trans_fun, w_b, num_gs, **kwargs
             )
+            self.add_module('b{}'.format(i + 1), res_block)
 
-    def forward(self, x: Tensor):
-        out = nn.ReLU(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = nn.ReLU(out)
-        return out
+    def forward(self, x):
+        for block in self.children():
+            x = block(x)
+        return x
 
+# TODO:
 class ResBlockDec(nn.Module):
 
-    def __init__(self, in_planes: int, stride: int=1):
+    def __init__(self, w_in: int, stride: int=1):
         super().__init__()
 
-        planes = int(in_planes/stride)
+        w_out = int(w_in/stride)
 
-        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(in_planes)
+        self.conv2 = nn.Conv2d(w_in, w_in, kernel_size=3, stride=1, padding=1, bias=False)
         # self.bn1 could have been placed here, but that messes up the order of the layers when printing the class
 
         if stride == 1:
-            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-            self.bn1 = nn.BatchNorm2d(planes)
-            self.shortcut = nn.Sequential()
+            self.conv1 = nn.Conv2d(w_in, w_out, kernel_size=3, stride=1, padding=1, bias=False)
         else:
-            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride)
-            self.bn1 = nn.BatchNorm2d(planes)
-            self.shortcut = nn.Sequential(
-                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride),
-                nn.BatchNorm2d(planes)
-            )
+            self.conv1 = ResizeConv2d(w_in, w_out, kernel_size=3, scale_factor=stride)
 
     def forward(self, x: Tensor):
-        out = nn.LeakyReLU(self.bn2(self.conv2(x)))
-        out = self.bn1(self.conv1(out))
-        out += self.shortcut(x)
+        out = nn.LeakyReLU(self.conv2(x))
+        out = self.conv1(out)
         out = nn.LeakyReLU(out)
         return out
