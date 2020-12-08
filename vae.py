@@ -10,6 +10,8 @@ from typing import *
 # NOTE: Interestingly, it may be the case that relu for encoding and leaky relu for decoding may provide
 #       better results, https://arxiv.org/pdf/1511.06434.pdf
 
+# TODO: still need to add iso functionality
+
 class VanillaVAE(nn.Module):
     """ 
     inspired by: https://github.com/AntixK/PyTorch-VAE/ and https://github.com/podgorskiy/VAE
@@ -64,7 +66,6 @@ class VanillaVAE(nn.Module):
         # Build Encoder
         self._construct_encoder(in_channels, hidden_dims, d, **kwargs)
 
-        # TODO: add dropout into self.encode
         if kwargs['DROPOUT'] > 0:
             self.dropout = nn.Dropout(p=kwargs['DROPOUT'], inplace=True)
         else:
@@ -74,9 +75,9 @@ class VanillaVAE(nn.Module):
         #   later see how a plain autoencoder does
         self.code_len = res//(2**(stage_count-1))
         if not kwargs['CIFAR']:
-            # stride 2 conv and stride 2 max pool
+            # stride 2 conv and stride 2 max pool stem
             self.code_len = self.code_len // 4
-        # print (hidden_dims[-1], self.code_len)
+
         p_zlen = hidden_dims[-1]*self.code_len**2
         self.fc_mu = nn.Linear(p_zlen, latent_dim)
         self.fc_var = nn.Linear(p_zlen, latent_dim)
@@ -119,8 +120,8 @@ class VanillaVAE(nn.Module):
     def _construct_decoder(self, hidden_dims, d, **kwargs):
         modules = []
         # first let's ignore the stem
-        # s is our multiplier
-        # TODO: change this to WDSR or EDSR
+        # TODO: change this to WDSR or EDSR, currently slightly broken, see jupyter notebook
+        # TODO: turn off batch normalization
         for i, w in enumerate(hidden_dims):
             modules.append(ResStage(w_in=w, w_out=w, stride=1, d=d[i], skip_relu=True, **kwargs))
             modules.append(nn.PixelShuffle(2))
@@ -160,7 +161,6 @@ class VanillaVAE(nn.Module):
         :return: (Tensor) [N x C x H x W]
         """
         result = self.decoder_input(z)
-        # print (result.shape)
         result = result.view(z.shape[0], self.last_hdim, self.code_len, self.code_len)
         result = self.decoder(result)
         result = self.final_layer(result)
