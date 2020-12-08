@@ -21,7 +21,7 @@ class VanillaVAE(nn.Module):
                  res: int,
                  stage_count: int = 4,
                  layer_mult: int = 64,
-                 d: = 1,
+                 d: int = 1,
                  resnet: bool = False,
                  **kwargs) -> None:
         """inits a VAE
@@ -49,82 +49,88 @@ class VanillaVAE(nn.Module):
 
         self.latent_dim = latent_dim
 
-        hidden_dims = [layer_mult*(2**i) for i in range(stage_count-1)]
-        # print (hidden_dims)
+        hidden_dims = [layer_mult*(2**i) for i in range(stage_count)]
+        hidden_dims = hidden_dims
         self.last_hdim = hidden_dims[-1]
         image_channels = in_channels
 
+        # TODO: might have to add extra d for just the decoder
         if type(d) == int:
             d = [d]*stage_count
-        # TODO: integrate blocks
+        
+        print (hidden_dims)
+        print (d)
 
         # Build Encoder
-        for h_dim in hidden_dims:
-            stride = 2
-            if in_channels == h_dim:
-                stride = 1
-            in_channels = h_dim
-
         self._construct_encoder(in_channels, hidden_dims, d, **kwargs)
 
-        self.code_len = res//(2**stage_count)
-        # TODO: add reshead into blocks and change these fc layers to heads
-        self.fc_mu = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
+        # TODO: add dropout into self.encode
+        if kwargs['DROPOUT'] > 0:
+            self.dropout = nn.Dropout(p=kwargs['DROPOUT'], inplace=True)
+        else:
+            self.dropout = None
 
+        # NOTE: honestly variational inference might not be super useful. Perhaps
+        #   later see how a plain autoencoder does
+        self.code_len = res//(2**(stage_count-1))
+        if not kwargs['CIFAR']:
+            # stride 2 conv and stride 2 max pool
+            self.code_len = self.code_len // 4
+        # print (hidden_dims[-1], self.code_len)
+        p_zlen = hidden_dims[-1]*self.code_len**2
+        self.fc_mu = nn.Linear(p_zlen, latent_dim)
+        self.fc_var = nn.Linear(p_zlen, latent_dim)
+
+        
         # Build Decoder
+        hidden_dims.reverse()
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * self.code_len * self.code_len)
+        self.decoder_input = nn.Linear(latent_dim, p_zlen)
 
-        hidden_dims.reverse()
-
-        # transpose convolution
-        for i in range(len(hidden_dims) - 1):
-            modules.append(
-                nn.Sequential(
-                    nn.ConvTranspose2d(hidden_dims[i],
-                                       hidden_dims[i + 1],
-                                       kernel_size=3,
-                                       stride=2,
-                                       padding=1,
-                                       output_padding=1),
-                    nn.BatchNorm2d(hidden_dims[i + 1]),
-                    nn.LeakyReLU())
-            )
-
-        self.decoder = nn.Sequential(*modules)
+        self._construct_decoder(hidden_dims, d, **kwargs)
 
         self.final_layer = nn.Sequential(
                             nn.ConvTranspose2d(hidden_dims[-1],
-                                               hidden_dims[-1],
+                                               out_channels=image_channels,
                                                kernel_size=3,
-                                               stride=2,
+                                               stride=1,
                                                padding=1,
                                                output_padding=1),
-                            nn.BatchNorm2d(hidden_dims[-1]),
-                            nn.LeakyReLU(),
-                            nn.Conv2d(hidden_dims[-1], out_channels=image_channels,
-                                      kernel_size= 3, padding= 1),
                             nn.Tanh())
 
-    def _construct_encoder(in_channels, hidden_dims, d, **kwargs):
+    def _construct_encoder(self, in_channels, hidden_dims, d, **kwargs):
         modules = []
         # stem
-        modules.append(ResStem(w_in= in_channels, w_out= hidden_dims[0], **kwargs)
+        modules.append(ResStem(w_in= in_channels, w_out= hidden_dims[0], **kwargs))
         # stages
         w_in = hidden_dims[0]
         for i, w_out in enumerate(hidden_dims):
+            print (i)
             stride = 2
-            if in_channels == h_dim:
+            if w_in == w_out:
                 stride = 1
             modules.append(ResStage(w_in=w_in, w_out=w_out, stride=stride, d=d[i], **kwargs))
             w_in = w_out
         self.encoder = nn.Sequential(*modules)
         # head is fc_mu fc_var
 
+    # TODO: might want to change the kwargs for this to another set of kwargs
+    def _construct_decoder(self, hidden_dims, d, **kwargs):
+        modules = []
+        # first let's ignore the stem
+        # s is our multiplier
+        # TODO: change this to WDSR or EDSR
+        for i, w in enumerate(hidden_dims):
+            modules.append(ResStage(w_in=w, w_out=w, stride=1, d=d[i], skip_relu=True, **kwargs))
+            modules.append(nn.PixelShuffle(2))
+            modules.append(nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out))
+        
+        # TODO: add stem based on kwargs cifar
+        self.decoder = nn.Sequential(*modules)
+
     # TODO: finish this, see _network_init
-    def _init_encoder(**kwargs):
+    def _init_encoder(self, **kwargs):
         return None
 
     def encode(self, input: Tensor) -> List[Tensor]:
@@ -139,6 +145,8 @@ class VanillaVAE(nn.Module):
 
         # Split the result into mu and var components
         # of the latent Gaussian distribution
+        if self.dropout:
+            result = self.dropout(result)
         mu = self.fc_mu(result)
         log_var = self.fc_var(result)
 
@@ -207,30 +215,3 @@ class VanillaVAE(nn.Module):
         return self.forward(x)[0]
    
 
-
-class IsoVAE(VanillaVAE):
-    def __init__(self,
-                 in_channels: int,
-                 latent_dim: int,
-                 res: int,
-                 layer_count: int,
-                 layer_mult: int,
-                 down: bool = True) -> None:
-        """[summary]
-
-        Parameters
-        ----------
-        same as VanillaVAE, see above
-
-        down : bool, optional
-            true if only isometry in first half of network, by default True
-        """
-        # super super init
-        super().__init__(in_channels,
-                 latent_dim,
-                 res,
-                 layer_count,
-                 layer_mult)
-        # TODO: Initialize to delta
-    
-    # TODO: change loss

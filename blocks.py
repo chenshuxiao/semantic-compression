@@ -7,12 +7,25 @@ from typing import *
 # TODO: make blocks of regular, resnet, iso, R-iso
 # TODO: we will make regular and resnet first, then iso and R-iso as flags?
 
-def get_regular(in_channels, h_dim, stride):
+# Won't really use these two
+def get_regular_enc(in_channels, h_dim, stride):
     return nn.Sequential(
             nn.Conv2d(in_channels, out_channels=h_dim,
                     kernel_size= 3, stride= stride, padding= 1),
             nn.BatchNorm2d(h_dim),
             nn.ReLU()
+        )
+    
+def get_regular_dec(h_dim_i, h_dim_i_1, stride):
+    return nn.Sequential(
+            nn.ConvTranspose2d(h_dim_i,
+                                h_dim_i_1,
+                                kernel_size=3,
+                                stride=stride,
+                                padding=1,
+                                output_padding=1),
+            nn.BatchNorm2d(hidden_dims[i + 1]),
+            nn.LeakyReLU()
         )
 
 class SReLU(nn.Module):
@@ -66,10 +79,22 @@ class ResBlock(nn.Module):
     """Residual block: x + F(x)"""
 
     def __init__(
-        self, w_in, w_out, stride, trans_fun, w_b=None, num_gs=1, **kwargs
+        self, w_in, w_out, stride, trans_fun, w_b=None, num_gs=1, skip_relu=False, **kwargs
     ):
+        """
+
+        Parameters
+        ----------
+        w_b :
+        num_gs : 
+            ^ all of these above don't matter rn
+        skip_relu:
+            currently only used in decode, just so we can get the pixel shuffle, then
+            afterwards the relu
+        """
         super(ResBlock, self).__init__()
         self.kwargs = kwargs
+        self.skip_relu = skip_relu
         self._construct(w_in, w_out, stride, trans_fun, w_b, num_gs, **kwargs)
 
     def _add_skip_proj(self, w_in, w_out, stride, **kwargs):
@@ -86,7 +111,8 @@ class ResBlock(nn.Module):
         if self.proj_block and kwargs['HAS_ST']:
             self._add_skip_proj(w_in, w_out, stride, **kwargs)
         self.f = trans_fun(w_in, w_out, stride, w_b, num_gs, **kwargs)
-        self.relu = nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out)
+        if not self.skip_relu:
+            self.relu = nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out)
 
     def forward(self, x):
         if self.proj_block:
@@ -101,12 +127,13 @@ class ResBlock(nn.Module):
                 x = x + self.f(x)
             else:
                 x = self.f(x)
-        x = self.relu(x)
+        if not self.skip_relu:
+            x = self.relu(x)
         return x
 
 class ResStem(nn.Module):
     """Stem of resnet (start of resnet)."""
-    def __init__(self, w_in: int, w_out: int, stride: int=1, cifar: bool=True, **kwargs):
+    def __init__(self, w_in: int, w_out: int, stride: int=1, **kwargs):
         """[summary]
 
         Parameters
@@ -121,7 +148,7 @@ class ResStem(nn.Module):
             if True: kernel_size=7, padding=3; else k=3, padding=1
         """
         super().__init__()
-        if cifar:
+        if kwargs['CIFAR']:
             self._construct_cifar(w_in, w_out, **kwargs)
         else:
             self._construct_imagenet(w_in, w_out, **kwargs)
@@ -180,24 +207,3 @@ class ResStage(nn.Module):
             x = block(x)
         return x
 
-# TODO:
-class ResBlockDec(nn.Module):
-
-    def __init__(self, w_in: int, stride: int=1):
-        super().__init__()
-
-        w_out = int(w_in/stride)
-
-        self.conv2 = nn.Conv2d(w_in, w_in, kernel_size=3, stride=1, padding=1, bias=False)
-        # self.bn1 could have been placed here, but that messes up the order of the layers when printing the class
-
-        if stride == 1:
-            self.conv1 = nn.Conv2d(w_in, w_out, kernel_size=3, stride=1, padding=1, bias=False)
-        else:
-            self.conv1 = ResizeConv2d(w_in, w_out, kernel_size=3, scale_factor=stride)
-
-    def forward(self, x: Tensor):
-        out = nn.LeakyReLU(self.conv2(x))
-        out = self.conv1(out)
-        out = nn.LeakyReLU(out)
-        return out

@@ -1,5 +1,6 @@
 import torch
 from torch.nn import functional as F
+from torch import Tensor
 
 def loss_function(self,
                       recons: Tensor,
