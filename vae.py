@@ -1,82 +1,141 @@
 import torch
 from torch import nn
 from torch import Tensor
-from torch.nn import functional as F
+from blocks import *
 from typing import *
 
 """ contains vae classes.
-VanillaVae adapted from https://github.com/AntixK/PyTorch-VAE/ and https://github.com/podgorskiy/VAE
-
 """
 
-class VanillaVAE(nn.Module):
+# NOTE: Interestingly, it may be the case that relu for encoding and leaky relu for decoding may provide
+#       better results, https://arxiv.org/pdf/1511.06434.pdf
 
+# TODO: still need to add iso functionality
+
+class VanillaVAE(nn.Module):
+    """ 
+    inspired by: https://github.com/AntixK/PyTorch-VAE/ and https://github.com/podgorskiy/VAE
+    """
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
                  res: int,
-                 layer_count: int) -> None:
+                 stage_count: int = 4,
+                 layer_mult: int = 64,
+                 d: int = 1,
+                 resnet: bool = False,
+                 **kwargs) -> None:
+        """inits a VAE
+
+        Parameters
+        ----------
+        in_channels : int
+            number of channels in image data
+        latent_dim : int
+            dimensionality of latent(z) code
+        res : int
+            length of resolution of (square)image data
+            for now only deals with powers of two...
+        stage_count : int
+            number of hidden stage layers of half of the network, by default 4
+        layer_mult : int
+            first hidden layer dimension, by default 64
+        d : int or array
+            # of transforms per block, by default 1
+        resnet : bool
+            flag to add batch_normalization and skip connections, by default False
+        """
+
         super(VanillaVAE, self).__init__()
 
         self.latent_dim = latent_dim
 
-        modules = []
-        hidden_dims = [res*(2**i) for i in range(layer_count)]
-        # print (hidden_dims)
+        hidden_dims = [layer_mult*(2**i) for i in range(stage_count)]
+        hidden_dims = hidden_dims
         self.last_hdim = hidden_dims[-1]
-        image_channels = in_channels
+        self.image_channels = in_channels
+
+        # TODO: might have to add extra d for just the decoder
+        if type(d) == int:
+            d = [d]*stage_count
+        
+        print (hidden_dims)
+        print (d)
 
         # Build Encoder
-        for h_dim in hidden_dims:
-            modules.append(
-                nn.Sequential(
-                    nn.Conv2d(in_channels, out_channels=h_dim,
-                              kernel_size= 3, stride= 2, padding  = 1),
-                    nn.BatchNorm2d(h_dim),
-                    nn.LeakyReLU())
-            )
-            in_channels = h_dim
+        self._construct_encoder(in_channels, hidden_dims, d, **kwargs)
 
-        self.encoder = nn.Sequential(*modules)
-        self.code_len = res//(2**layer_count)
-        self.fc_mu = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1]*self.code_len*self.code_len, latent_dim)
+        if kwargs['DROPOUT'] > 0:
+            self.dropout = nn.Dropout(p=kwargs['DROPOUT'], inplace=True)
+        else:
+            self.dropout = None
 
+        # NOTE: honestly variational inference might not be super useful. Perhaps
+        #   later see how a plain autoencoder does
+        self.code_len = res//(2**(stage_count-1))
+        if not kwargs['CIFAR']:
+            # stride 2 conv and stride 2 max pool stem
+            self.code_len = self.code_len // 4
+
+        p_zlen = hidden_dims[-1]*self.code_len**2
+        self.fc_mu = nn.Linear(p_zlen, latent_dim)
+        self.fc_var = nn.Linear(p_zlen, latent_dim)
+
+        
         # Build Decoder
+        hidden_dims.reverse()
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * self.code_len * self.code_len)
+        self.decoder_input = nn.Linear(latent_dim, p_zlen)
 
-        hidden_dims.reverse()
-
-        for i in range(len(hidden_dims) - 1):
-            modules.append(
-                nn.Sequential(
-                    nn.ConvTranspose2d(hidden_dims[i],
-                                       hidden_dims[i + 1],
-                                       kernel_size=3,
-                                       stride = 2,
-                                       padding=1,
-                                       output_padding=1),
-                    nn.BatchNorm2d(hidden_dims[i + 1]),
-                    nn.LeakyReLU())
-            )
-
-        self.decoder = nn.Sequential(*modules)
+        self._construct_decoder(hidden_dims, d, **kwargs)
 
         self.final_layer = nn.Sequential(
                             nn.ConvTranspose2d(hidden_dims[-1],
-                                               hidden_dims[-1],
+                                               out_channels=self.image_channels,
                                                kernel_size=3,
-                                               stride=2,
+                                               stride=1,
                                                padding=1,
                                                output_padding=1),
-                            nn.BatchNorm2d(hidden_dims[-1]),
-                            nn.LeakyReLU(),
-                            nn.Conv2d(hidden_dims[-1], out_channels=image_channels,
-                                      kernel_size= 3, padding= 1),
                             nn.Tanh())
+
+    def _construct_encoder(self, in_channels, hidden_dims, d, **kwargs):
+        modules = []
+        # stem
+        modules.append(ResStem(w_in= in_channels, w_out= hidden_dims[0], **kwargs))
+        # stages
+        w_in = hidden_dims[0]
+        for i, w_out in enumerate(hidden_dims):
+            print (i)
+            stride = 2
+            if w_in == w_out:
+                stride = 1
+            modules.append(ResStage(w_in=w_in, w_out=w_out, stride=stride, d=d[i], **kwargs))
+            w_in = w_out
+        self.encoder = nn.Sequential(*modules)
+        # head is fc_mu fc_var
+
+    # TODO: might want to change the kwargs for this to another set of kwargs
+    def _construct_decoder(self, hidden_dims, d, **kwargs):
+        modules = []
+        # first let's ignore the stem
+        # TODO: change this to WDSR or EDSR, currently slightly broken, see jupyter notebook
+        # TODO: turn off batch normalization
+        for i, w in enumerate(hidden_dims[:-2]):
+            modules.append(ResStage(w_in=w, w_out=w*2, stride=1, d=d[i], skip_relu=True, **kwargs))
+            modules.append(nn.PixelShuffle(2))
+            # may be beneficial to not have this ReLU
+            # modules.append(nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out))
+        
+        modules.append(ResStage(w_in=hidden_dims[-2], w_out=self.image_channels*4, stride=1, d=d[i], skip_relu=True, **kwargs))
+        modules.append(nn.PixelShuffle(2))
+        # TODO: add stem based on kwargs cifar
+        self.decoder = nn.Sequential(*modules)
+
+    # TODO: finish this, see _network_init
+    def _init_encoder(self, **kwargs):
+        return None
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
@@ -90,6 +149,8 @@ class VanillaVAE(nn.Module):
 
         # Split the result into mu and var components
         # of the latent Gaussian distribution
+        if self.dropout:
+            result = self.dropout(result)
         mu = self.fc_mu(result)
         log_var = self.fc_var(result)
 
@@ -103,10 +164,9 @@ class VanillaVAE(nn.Module):
         :return: (Tensor) [N x C x H x W]
         """
         result = self.decoder_input(z)
-        # print (result.shape)
         result = result.view(z.shape[0], self.last_hdim, self.code_len, self.code_len)
         result = self.decoder(result)
-        result = self.final_layer(result)
+        # result = self.final_layer(result)
         return result
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
@@ -129,29 +189,10 @@ class VanillaVAE(nn.Module):
         z = self.reparameterize(mu, log_var)
         return  [self.decode(z), mu, log_var]
 
-    def loss_function(self,
-                      recons: Tensor,
-                      input: Tensor,
-                      mu: Tensor,
-                      logvar: Tensor,
-                      kld_weight: float = 0.1) -> dict:
-        """
-        Computes the VAE loss function.
-        KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
-        :param args:
-        :param kwargs:
-        :return:
-        """
-
-        recons_loss = F.mse_loss(recons, input)
-
-        kld_loss = -0.5 * torch.mean(torch.mean(1 + logvar - mu ** 2 - logvar.exp(), dim = 1), dim = 0)
-
-        return {'reconstruction_loss': recons_loss, 'KLD':kld_weight * kld_loss}
 
     def sample(self,
                num_samples:int,
-               current_device: int) -> Tensor:
+               current_device) -> Tensor:
         """
         Samples from the latent space and return the corresponding
         image space map.
@@ -176,3 +217,4 @@ class VanillaVAE(nn.Module):
 
         return self.forward(x)[0]
    
+
