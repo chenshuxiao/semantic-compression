@@ -2,12 +2,11 @@ import torch
 from torch.nn import functional as F
 from torch import Tensor
 
-def loss_function(self,
-                      recons: Tensor,
-                      input: Tensor,
-                      mu: Tensor,
-                      logvar: Tensor,
-                      kld_weight: float = 0.05) -> dict:
+def loss_function(recons: Tensor,
+                input: Tensor,
+                mu: Tensor,
+                logvar: Tensor,
+                kld_weight: float = 0.05) -> dict:
         """
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}

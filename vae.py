@@ -54,7 +54,7 @@ class VanillaVAE(nn.Module):
         hidden_dims = [layer_mult*(2**i) for i in range(stage_count)]
         hidden_dims = hidden_dims
         self.last_hdim = hidden_dims[-1]
-        image_channels = in_channels
+        self.image_channels = in_channels
 
         # TODO: might have to add extra d for just the decoder
         if type(d) == int:
@@ -93,7 +93,7 @@ class VanillaVAE(nn.Module):
 
         self.final_layer = nn.Sequential(
                             nn.ConvTranspose2d(hidden_dims[-1],
-                                               out_channels=image_channels,
+                                               out_channels=self.image_channels,
                                                kernel_size=3,
                                                stride=1,
                                                padding=1,
@@ -122,11 +122,14 @@ class VanillaVAE(nn.Module):
         # first let's ignore the stem
         # TODO: change this to WDSR or EDSR, currently slightly broken, see jupyter notebook
         # TODO: turn off batch normalization
-        for i, w in enumerate(hidden_dims):
-            modules.append(ResStage(w_in=w, w_out=w, stride=1, d=d[i], skip_relu=True, **kwargs))
+        for i, w in enumerate(hidden_dims[:-2]):
+            modules.append(ResStage(w_in=w, w_out=w*2, stride=1, d=d[i], skip_relu=True, **kwargs))
             modules.append(nn.PixelShuffle(2))
-            modules.append(nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out))
+            # may be beneficial to not have this ReLU
+            # modules.append(nn.ReLU(True) if not kwargs['SReLU'] else SReLU(w_out))
         
+        modules.append(ResStage(w_in=hidden_dims[-2], w_out=self.image_channels*4, stride=1, d=d[i], skip_relu=True, **kwargs))
+        modules.append(nn.PixelShuffle(2))
         # TODO: add stem based on kwargs cifar
         self.decoder = nn.Sequential(*modules)
 
@@ -163,7 +166,7 @@ class VanillaVAE(nn.Module):
         result = self.decoder_input(z)
         result = result.view(z.shape[0], self.last_hdim, self.code_len, self.code_len)
         result = self.decoder(result)
-        result = self.final_layer(result)
+        # result = self.final_layer(result)
         return result
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:

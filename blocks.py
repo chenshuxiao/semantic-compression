@@ -4,9 +4,6 @@ from torch import Tensor
 from torch.nn import functional as F
 from typing import *
 
-# TODO: make blocks of regular, resnet, iso, R-iso
-# TODO: we will make regular and resnet first, then iso and R-iso as flags?
-
 # Won't really use these two
 def get_regular_enc(in_channels, h_dim, stride):
     return nn.Sequential(
