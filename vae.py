@@ -82,7 +82,7 @@ class VAE(nn.Module):
 
         # Build Encoder
         self._construct_encoder(in_channels, hidden_dims, d, **kwargs_enc)
-        self._init_coder(self.encoder, **kwargs_enc)
+        # self._init_coder(self.encoder, **kwargs_enc)
 
         if kwargs_enc['DROPOUT'] > 0:
             self.dropout = nn.Dropout(p=kwargs_enc['DROPOUT'], inplace=True)
@@ -108,7 +108,7 @@ class VAE(nn.Module):
         self.decoder_input = nn.Linear(latent_dim, p_zlen)
 
         self._construct_decoder(hidden_dims, d, **kwargs_dec)
-        self._init_coder(self.encoder, **kwargs_dec)
+        # self._init_coder(self.encoder, **kwargs_dec)
 
     def _construct_encoder(self, in_channels, hidden_dims, d, **kwargs):
         modules = []

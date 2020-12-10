@@ -23,6 +23,7 @@ def loss_function(recons: Tensor,
 
         kld_loss = -0.5 * torch.mean(torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim = 1), dim = 0)
 
+        # TODO: fix this broken shit
         enc_ortho_loss = 0
         if enc_ortho_coeff > 0:
             enc_ortho_loss = ortho(vae.encoder)
