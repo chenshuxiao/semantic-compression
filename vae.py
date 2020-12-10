@@ -10,8 +10,6 @@ from typing import *
 # NOTE: Interestingly, it may be the case that relu for encoding and leaky relu for decoding may provide
 #       better results, https://arxiv.org/pdf/1511.06434.pdf
 
-# TODO: still need to add iso functionality
-
 
 class VAE(nn.Module):
     """ 
@@ -138,11 +136,12 @@ class VAE(nn.Module):
         
         modules.append(ResStage(w_in=hidden_dims[-2], w_out=self.image_channels*4, stride=1, d=d[i], skip_relu=True, **kwargs))
         modules.append(nn.PixelShuffle(2))
-        modules.append(nn.Tanh())
+        # TODO: investigate this activation
+        # modules.append(nn.Tanh())
         # TODO: add stem based on kwargs cifar
         self.decoder = nn.Sequential(*modules)
 
-    # TODO: finish this, see _network_init
+    # TODO: investigate init_coder, currently commented out in __init__
     def _init_coder(self, coder, **kwargs):
         for m in coder.modules():
             if isinstance(m, nn.Conv2d):
