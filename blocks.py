@@ -89,7 +89,7 @@ class ResBlock(nn.Module):
             currently only used in decode, just so we can get the pixel shuffle, then
             afterwards the relu
         """
-        super(ResBlock, self).__init__()
+        super().__init__()
         self.kwargs = kwargs
         self.skip_relu = skip_relu
         self._construct(w_in, w_out, stride, trans_fun, w_b, num_gs, **kwargs)

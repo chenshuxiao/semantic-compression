@@ -12,7 +12,8 @@ from typing import *
 
 # TODO: still need to add iso functionality
 
-class VanillaVAE(nn.Module):
+
+class VAE(nn.Module):
     """ 
     inspired by: https://github.com/AntixK/PyTorch-VAE/ and https://github.com/podgorskiy/VAE
     """
@@ -25,7 +26,23 @@ class VanillaVAE(nn.Module):
                  layer_mult: int = 64,
                  d: int = 1,
                  resnet: bool = False,
-                 **kwargs) -> None:
+                 kwargs_enc: dict = {
+                                        'HAS_BN': True,
+                                        'SReLU': False,
+                                        'HAS_ST': False,
+                                        'DROPOUT': 0,
+                                        'CIFAR': True,
+                                        'DIRAC_INIT': False
+                                    },
+                 kwargs_dec: dict = {
+                                        'HAS_BN': False,
+                                        'SReLU': False,
+                                        'HAS_ST': False,
+                                        'DROPOUT': 0,
+                                        'CIFAR': True,
+                                        'DIRAC_INIT': False
+                                    }
+                ) -> None:
         """inits a VAE
 
         Parameters
@@ -47,7 +64,7 @@ class VanillaVAE(nn.Module):
             flag to add batch_normalization and skip connections, by default False
         """
 
-        super(VanillaVAE, self).__init__()
+        super().__init__()
 
         self.latent_dim = latent_dim
 
@@ -64,17 +81,18 @@ class VanillaVAE(nn.Module):
         print (d)
 
         # Build Encoder
-        self._construct_encoder(in_channels, hidden_dims, d, **kwargs)
+        self._construct_encoder(in_channels, hidden_dims, d, **kwargs_enc)
+        self._init_coder(self.encoder, **kwargs_enc)
 
-        if kwargs['DROPOUT'] > 0:
-            self.dropout = nn.Dropout(p=kwargs['DROPOUT'], inplace=True)
+        if kwargs_enc['DROPOUT'] > 0:
+            self.dropout = nn.Dropout(p=kwargs_enc['DROPOUT'], inplace=True)
         else:
             self.dropout = None
 
         # NOTE: honestly variational inference might not be super useful. Perhaps
         #   later see how a plain autoencoder does
         self.code_len = res//(2**(stage_count-1))
-        if not kwargs['CIFAR']:
+        if not kwargs_enc['CIFAR']:
             # stride 2 conv and stride 2 max pool stem
             self.code_len = self.code_len // 4
 
@@ -89,16 +107,8 @@ class VanillaVAE(nn.Module):
 
         self.decoder_input = nn.Linear(latent_dim, p_zlen)
 
-        self._construct_decoder(hidden_dims, d, **kwargs)
-
-        self.final_layer = nn.Sequential(
-                            nn.ConvTranspose2d(hidden_dims[-1],
-                                               out_channels=self.image_channels,
-                                               kernel_size=3,
-                                               stride=1,
-                                               padding=1,
-                                               output_padding=1),
-                            nn.Tanh())
+        self._construct_decoder(hidden_dims, d, **kwargs_dec)
+        self._init_coder(self.encoder, **kwargs_dec)
 
     def _construct_encoder(self, in_channels, hidden_dims, d, **kwargs):
         modules = []
@@ -116,12 +126,10 @@ class VanillaVAE(nn.Module):
         self.encoder = nn.Sequential(*modules)
         # head is fc_mu fc_var
 
-    # TODO: might want to change the kwargs for this to another set of kwargs
     def _construct_decoder(self, hidden_dims, d, **kwargs):
         modules = []
         # first let's ignore the stem
         # TODO: change this to WDSR or EDSR, currently slightly broken, see jupyter notebook
-        # TODO: turn off batch normalization
         for i, w in enumerate(hidden_dims[:-2]):
             modules.append(ResStage(w_in=w, w_out=w*2, stride=1, d=d[i], skip_relu=True, **kwargs))
             modules.append(nn.PixelShuffle(2))
@@ -130,12 +138,26 @@ class VanillaVAE(nn.Module):
         
         modules.append(ResStage(w_in=hidden_dims[-2], w_out=self.image_channels*4, stride=1, d=d[i], skip_relu=True, **kwargs))
         modules.append(nn.PixelShuffle(2))
+        modules.append(nn.Tanh())
         # TODO: add stem based on kwargs cifar
         self.decoder = nn.Sequential(*modules)
 
     # TODO: finish this, see _network_init
-    def _init_encoder(self, **kwargs):
-        return None
+    def _init_coder(self, coder, **kwargs):
+        for m in coder.modules():
+            if isinstance(m, nn.Conv2d):
+                if kwargs['DIRAC_INIT']:
+                    # the first 7x7 convolution we use pytorch default initialization
+                    # and not enforce orthogonality since the large input/output channel difference
+                    if m.kernel_size != (7, 7):
+                        nn.init.dirac_(m.weight)
+            # otherwise just default kaiming
+            elif isinstance(m, nn.BatchNorm2d):
+                zero_init_gamma = (
+                    hasattr(m, 'final_bn') and m.final_bn
+                )
+                m.weight.data.fill_(0.0 if zero_init_gamma else 1.0)
+                m.bias.data.zero_()
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
