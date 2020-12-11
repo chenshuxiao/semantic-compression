@@ -80,7 +80,7 @@ class VAE(nn.Module):
 
         # Build Encoder
         self._construct_encoder(in_channels, hidden_dims, d, **kwargs_enc)
-        # self._init_coder(self.encoder, **kwargs_enc)
+        self._init_coder(self.encoder, **kwargs_enc)
 
         if kwargs_enc['DROPOUT'] > 0:
             self.dropout = nn.Dropout(p=kwargs_enc['DROPOUT'], inplace=True)
@@ -106,7 +106,7 @@ class VAE(nn.Module):
         self.decoder_input = nn.Linear(latent_dim, p_zlen)
 
         self._construct_decoder(hidden_dims, d, **kwargs_dec)
-        # self._init_coder(self.encoder, **kwargs_dec)
+        self._init_coder(self.decoder, **kwargs_dec)
 
     def _construct_encoder(self, in_channels, hidden_dims, d, **kwargs):
         modules = []
@@ -137,7 +137,7 @@ class VAE(nn.Module):
         modules.append(ResStage(w_in=hidden_dims[-2], w_out=self.image_channels*4, stride=1, d=d[i], skip_relu=True, **kwargs))
         modules.append(nn.PixelShuffle(2))
         # TODO: investigate this activation
-        # modules.append(nn.Tanh())
+        modules.append(nn.Tanh())
         # TODO: add stem based on kwargs cifar
         self.decoder = nn.Sequential(*modules)
 
@@ -150,13 +150,14 @@ class VAE(nn.Module):
                     # and not enforce orthogonality since the large input/output channel difference
                     if m.kernel_size != (7, 7):
                         nn.init.dirac_(m.weight)
-            # otherwise just default kaiming
-            elif isinstance(m, nn.BatchNorm2d):
-                zero_init_gamma = (
-                    hasattr(m, 'final_bn') and m.final_bn
-                )
-                m.weight.data.fill_(0.0 if zero_init_gamma else 1.0)
-                m.bias.data.zero_()
+                # otherwise just default kaiming
+            # not really sure why isonet does this, very poor performance
+            # elif isinstance(m, nn.BatchNorm2d):
+            #     zero_init_gamma = (
+            #         hasattr(m, 'final_bn') and m.final_bn
+            #     )
+            #     m.weight.data.fill_(0.0 if zero_init_gamma else 1.0)
+            #     m.bias.data.zero_()
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
@@ -187,6 +188,7 @@ class VAE(nn.Module):
         result = self.decoder_input(z)
         result = result.view(z.shape[0], self.last_hdim, self.code_len, self.code_len)
         result = self.decoder(result)
+        # we don't really need final layer
         # result = self.final_layer(result)
         return result
 

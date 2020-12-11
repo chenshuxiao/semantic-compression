@@ -99,8 +99,7 @@ class BetaSchedulerMono:
         self.start = start
         self.stop = stop
         self.period = period
-        self.ratio = ratio
-        self.step = (stop-start)/(period*ratio)
+        self.step = (stop-start)/(period)
         self.v, self.i = start - self.step, -1
     
     def __iter__(self):
