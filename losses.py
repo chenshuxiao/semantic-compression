@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 from vae import VAE
@@ -23,19 +24,23 @@ def loss_function(recons: Tensor,
 
         kld_loss = -0.5 * torch.mean(torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim = 1), dim = 0)
 
-        # TODO: fix this broken shit
-        enc_ortho_loss = 0
+        rv = {'recon': recons_loss,
+              'KLD': kld_weight * kld_loss,
+              'total': recons_loss + kld_weight * kld_loss}
+
+        # TODO: fuck it cuda for now
+        rv['enc_ortho'] = Tensor([0])
         if enc_ortho_coeff > 0:
-            enc_ortho_loss = ortho(vae.encoder)
+            rv['enc_ortho'] = enc_ortho_coeff * ortho(vae.encoder).cuda()
+            rv['total'] = rv['total'] + rv['enc_ortho']
 
-        dec_ortho_loss = 0
+
+        rv['dec_ortho'] = Tensor([0])
         if dec_ortho_coeff > 0:
-            dec_ortho_loss = ortho(vae.decoder)
+            rv['dec_ortho'] = dec_ortho_coeff * ortho(vae.decoder).cuda()
+            rv['total'] = rv['total'] + rv['dec_ortho']
 
-        return {'recon': recons_loss,
-                'KLD': kld_weight * kld_loss,
-                'enc_ortho': enc_ortho_coeff * enc_ortho_loss,
-                'dec_ortho': dec_ortho_coeff * dec_ortho_loss}
+        return rv
 
 def ortho(model):
     ortho_penalty = []
