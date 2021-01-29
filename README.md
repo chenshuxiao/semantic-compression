@@ -22,3 +22,4 @@ We would like to, firstly, **find a way of compressing the *h*-by-*w*-by-*n* int
 4. Extent our reach back to the pixel-wise semantic segmentation neural network itself. Anything inside the neural network is valuable to the compression? In this way, we no longer treat the network as a black box. 
 5. Keep the FCN layers the same, but change the last upscale layer to decrease dimensionality and have specific properties, such as cluster distance consistency and simple distance measures(eudclidean) approximating similarity between object classes.
 
+Update: This project has been pivoted to see analyze the effects of isometry in networks. See report.pdf for details.
